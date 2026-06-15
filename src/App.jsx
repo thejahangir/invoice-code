@@ -129,6 +129,8 @@ export default function App() {
   const [invoices, setInvoices] = useState(initialInvoices);
   const [toasts, setToasts] = useState([]);
 
+  const [currentView, setCurrentView] = useState("dashboard"); // "dashboard" | "invoices"
+
   // Filter & Search & Pagination States
   const [currentTab, setCurrentTab] = useState("all"); // "all" | "bad"
   const [searchQuery, setSearchQuery] = useState("");
@@ -164,8 +166,127 @@ export default function App() {
 
   // Calculate high-level KPIs based on the global invoices database state
   const totalInvoicesCount = invoices.length;
-  const validInvoicesCount = invoices.filter(inv => inv.validation === "Valid").length;
+  const totalInvoicesAmount = invoices.reduce((sum, inv) => sum + inv.amount, 0);
+
+  const processingCount = invoices.filter(inv => inv.status === "Processing").length;
+  const processingAmount = invoices.filter(inv => inv.status === "Processing").reduce((sum, inv) => sum + inv.amount, 0);
+
+  const processedCount = invoices.filter(inv => inv.status === "Approved").length;
+  const processedAmount = invoices.filter(inv => inv.status === "Approved").reduce((sum, inv) => sum + inv.amount, 0);
+
   const invalidInvoicesCount = invoices.filter(inv => inv.validation === "Invalid").length;
+  const invalidInvoicesAmount = invoices.filter(inv => inv.validation === "Invalid").reduce((sum, inv) => sum + inv.amount, 0);
+
+  const validInvoicesCount = invoices.filter(inv => inv.validation === "Valid").length;
+
+  const successPercentage = totalInvoicesCount ? Math.round((processedCount / totalInvoicesCount) * 100) : 0;
+
+  const formatKpiCurrency = (val) => {
+    return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(val);
+  };
+
+  // Accounts Receivable (A/R) Aging Stats grouping based on mock today baseDate (June 15, 2026)
+  const arAgingStats = (() => {
+    let currentSum = 0;
+    let dueSum = 0;
+    let overdueSum = 0;
+    let criticalSum = 0;
+    const baseDate = new Date("2026-06-15");
+    
+    invoices.forEach(inv => {
+      const createdDate = new Date(inv.created);
+      const diffTime = Math.abs(baseDate - createdDate);
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      
+      if (diffDays <= 7) {
+        currentSum += inv.amount;
+      } else if (diffDays <= 15) {
+        dueSum += inv.amount;
+      } else if (diffDays <= 30) {
+        overdueSum += inv.amount;
+      } else {
+        criticalSum += inv.amount;
+      }
+    });
+    
+    return [
+      { range: "Current (0-7d)", amount: currentSum, color: "#3b82f6", label: "Within normal collection cycle" },
+      { range: "Due (8-15d)", amount: dueSum, color: "#f59e0b", label: "Expected receipt soon" },
+      { range: "Overdue (16-30d)", amount: overdueSum, color: "#efb731", label: "Grace period active / follow-up" },
+      { range: "Critical (30d+)", amount: criticalSum, color: "#ef4444", label: "Delinquent payment / collection action" }
+    ];
+  })();
+
+  const arAgingTotal = arAgingStats.reduce((sum, item) => sum + item.amount, 0);
+
+  const donutArcs = (() => {
+    let cumulativePercent = 0;
+    return arAgingStats.map(item => {
+      const percent = arAgingTotal ? (item.amount / arAgingTotal) * 100 : 0;
+      const strokeDasharray = `${(percent * 314.15) / 100} 314.15`;
+      const strokeDashoffset = `${314.15 - ((cumulativePercent * 314.15) / 100) + 78.53}`; // start at top (90 deg offset)
+      cumulativePercent += percent;
+      return {
+        ...item,
+        percent,
+        strokeDasharray,
+        strokeDashoffset
+      };
+    });
+  })();
+
+  // Dashboard vendor outlays: sum of invoice amounts for top 5 vendors.
+  const vendorStats = (() => {
+    const vendors = {};
+    invoices.forEach(inv => {
+      vendors[inv.vendor] = (vendors[inv.vendor] || 0) + inv.amount;
+    });
+    return Object.keys(vendors)
+      .map(name => ({ name, amount: vendors[name] }))
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 5);
+  })();
+
+  // Actionable Overdue Invoices logic
+  const actionableOverdueInvoices = (() => {
+    const baseDate = new Date("2026-06-15");
+    return invoices
+      .filter(inv => inv.status !== "Approved" && (inv.validation === "Invalid" || (Math.ceil(Math.abs(baseDate - new Date(inv.created)) / (1000 * 60 * 60 * 24)) > 15)))
+      .map(inv => {
+        const diffTime = Math.abs(baseDate - new Date(inv.created));
+        const daysPending = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        return { ...inv, daysPending };
+      })
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 4);
+  })();
+
+  // A/R Ledger Health & Efficiency Metrics calculations
+  const dso = (() => {
+    const baseDate = new Date("2026-06-15");
+    const unpaid = invoices.filter(inv => inv.status !== "Approved");
+    if (unpaid.length === 0) return 0;
+    const totalDays = unpaid.reduce((sum, inv) => {
+      const diffTime = Math.abs(baseDate - new Date(inv.created));
+      return sum + Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    }, 0);
+    return (totalDays / unpaid.length).toFixed(1);
+  })();
+
+  const cei = (() => {
+    const totalVal = invoices.reduce((sum, inv) => sum + inv.amount, 0);
+    if (totalVal === 0) return 100;
+    const approvedVal = invoices
+      .filter(inv => inv.status === "Approved")
+      .reduce((sum, inv) => sum + inv.amount, 0);
+    return ((approvedVal / totalVal) * 100).toFixed(1);
+  })();
+
+  const validationPassRate = (() => {
+    if (invoices.length === 0) return 100;
+    const validCount = invoices.filter(inv => inv.validation === "Valid").length;
+    return ((validCount / invoices.length) * 100).toFixed(1);
+  })();
 
   // Global handler to close context menu
   useEffect(() => {
@@ -417,7 +538,11 @@ export default function App() {
           </div>
 
           <nav className="nav-links">
-            <a href="#" className="nav-link">
+            <a 
+              href="#" 
+              className={`nav-link ${currentView === "dashboard" ? "active" : ""}`}
+              onClick={(e) => { e.preventDefault(); setCurrentView("dashboard"); }}
+            >
               <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="3" y="3" width="7" height="9"></rect>
                 <rect x="14" y="3" width="7" height="5"></rect>
@@ -426,7 +551,11 @@ export default function App() {
               </svg>
               <span>Dashboard</span>
             </a>
-            <a href="#" className="nav-link active">
+            <a 
+              href="#" 
+              className={`nav-link ${currentView === "invoices" ? "active" : ""}`}
+              onClick={(e) => { e.preventDefault(); setCurrentView("invoices"); }}
+            >
               <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
                 <polyline points="14 2 14 8 20 8"></polyline>
@@ -436,7 +565,7 @@ export default function App() {
               </svg>
               <span>Invoices</span>
             </a>
-            <a href="#" className="nav-link">
+            <a href="#" className="nav-link" onClick={(e) => e.preventDefault()}>
               <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
                 <circle cx="9" cy="7" r="4"></circle>
@@ -445,7 +574,7 @@ export default function App() {
               </svg>
               <span>Clients</span>
             </a>
-            <a href="#" className="nav-link">
+            <a href="#" className="nav-link" onClick={(e) => e.preventDefault()}>
               <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="18" y1="20" x2="18" y2="10"></line>
                 <line x1="12" y1="20" x2="12" y2="4"></line>
@@ -453,7 +582,7 @@ export default function App() {
               </svg>
               <span>Analytics</span>
             </a>
-            <a href="#" className="nav-link">
+            <a href="#" className="nav-link" onClick={(e) => e.preventDefault()}>
               <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="3"></circle>
                 <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
@@ -478,8 +607,14 @@ export default function App() {
           {/* Top Header */}
           <header className="header">
             <div className="header-title-area">
-              <h1 className="page-title">List of Invoice</h1>
-              <p className="page-subtitle">Manage, track, and validate your corporate invoice processing pipeline</p>
+              <h1 className="page-title">
+                {currentView === "dashboard" ? "Analytics Dashboard" : "List of Invoice"}
+              </h1>
+              <p className="page-subtitle">
+                {currentView === "dashboard" 
+                  ? "High-level performance analysis, metrics, and ledger visualization" 
+                  : "Manage, track, and validate your corporate invoice processing pipeline"}
+              </p>
             </div>
             <div className="header-actions">
               <div className="notification-badge">
@@ -502,302 +637,611 @@ export default function App() {
             </div>
           </header>
 
-          {/* KPI Metrics Cards */}
-          <section className="metrics-grid">
-            <div className="metric-card card-primary">
-              <div className="metric-header">
-                <span className="metric-title">Total Invoices</span>
-                <div className="metric-icon">
-                  <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                    <polyline points="14 2 14 8 20 8"></polyline>
-                    <line x1="16" y1="13" x2="8" y2="13"></line>
-                    <line x1="16" y1="17" x2="8" y2="17"></line>
-                    <polyline points="10 9 9 9 8 9"></polyline>
-                  </svg>
+          {currentView === "dashboard" ? (
+            <>
+              {/* Dashboard metrics cards */}
+              <section className="metrics-grid">
+                {/* 1. Received Card */}
+                <div className="metric-card card-received">
+                  <div className="metric-header">
+                    <span className="metric-title">Received</span>
+                    <div className="metric-icon">
+                      <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                        <path d="M12 11v6"></path>
+                        <path d="M9 14l3 3 3-3"></path>
+                      </svg>
+                    </div>
+                  </div>
+                  <div className="metric-content">
+                    <div className="metric-value-wrapper">
+                      <span className="metric-value" id="kpiTotal">
+                        <AnimatedCounter value={totalInvoicesCount} />
+                      </span>
+                      <span className="metric-value-label">Invoices</span>
+                    </div>
+                    <div className="metric-amount">
+                      {formatKpiCurrency(totalInvoicesAmount)}
+                    </div>
+                    <div className="metric-badge-footer">
+                      <span className="metric-trend-badge positive">
+                        <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="3" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="12" y1="19" x2="12" y2="5"></line>
+                          <polyline points="5 12 12 5 19 12"></polyline>
+                        </svg>
+                        +12%
+                      </span>
+                      <span className="metric-detail-label">Total registered</span>
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div className="metric-content">
-                <span className="metric-value" id="kpiTotal">
-                  <AnimatedCounter value={totalInvoicesCount} />
-                </span>
-                <span className="metric-change positive">
-                  <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="3" fill="none" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="12" y1="19" x2="12" y2="5"></line>
-                    <polyline points="5 12 12 5 19 12"></polyline>
-                  </svg>
-                  12% from last week
-                </span>
-              </div>
-            </div>
 
-            <div className="metric-card card-valid">
-              <div className="metric-header">
-                <span className="metric-title">Valid Invoices</span>
-                <div className="metric-icon">
-                  <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                    <polyline points="22 4 12 14.01 9 11.01"></polyline>
-                  </svg>
+                {/* 2. Processing Card */}
+                <div className="metric-card card-processing-kpi">
+                  <div className="metric-header">
+                    <span className="metric-title">Processing</span>
+                    <div className="metric-icon">
+                      <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <path d="M12 6v6l4 2"></path>
+                      </svg>
+                    </div>
+                  </div>
+                  <div className="metric-content">
+                    <div className="metric-value-wrapper">
+                      <span className="metric-value" id="kpiProcessing">
+                        <AnimatedCounter value={processingCount} />
+                      </span>
+                      <span className="metric-value-label">In Queue</span>
+                    </div>
+                    <div className="metric-amount">
+                      {formatKpiCurrency(processingAmount)}
+                    </div>
+                    <div className="metric-badge-footer">
+                      <span className="metric-pulse-badge">
+                        <span className="pulse-dot"></span> Active
+                      </span>
+                      <span className="metric-detail-label">In digestion queue</span>
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div className="metric-content">
-                <span className="metric-value" id="kpiValid">
-                  <AnimatedCounter value={validInvoicesCount} />
-                </span>
-                <span className="metric-label text-valid">No validation errors</span>
-              </div>
-            </div>
 
-            <div className="metric-card card-invalid-kpi">
-              <div className="metric-header">
-                <span className="metric-title">Invalid Invoices</span>
-                <div className="metric-icon">
-                  <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <line x1="12" y1="8" x2="12" y2="12"></line>
-                    <line x1="12" y1="16" x2="12.01" y2="16"></line>
-                  </svg>
+                {/* 3. Processed Card */}
+                <div className="metric-card card-processed-kpi">
+                  <div className="metric-header">
+                    <span className="metric-title">Processed</span>
+                    <div className="metric-icon">
+                      <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                        <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                      </svg>
+                    </div>
+                  </div>
+                  <div className="metric-content">
+                    <div className="metric-value-wrapper">
+                      <span className="metric-value" id="kpiProcessed">
+                        <AnimatedCounter value={processedCount} />
+                      </span>
+                      <span className="metric-value-label">Approved</span>
+                    </div>
+                    <div className="metric-amount">
+                      {formatKpiCurrency(processedAmount)}
+                    </div>
+                    <div className="metric-badge-footer">
+                      <span className="metric-trend-badge success">
+                        {successPercentage}%
+                      </span>
+                      <span className="metric-detail-label">Compliance rate</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 4. Invalid Card */}
+                <div className="metric-card card-invalid-kpi">
+                  <div className="metric-header">
+                    <span className="metric-title">Invalid Invoice</span>
+                    <div className="metric-icon">
+                      <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="12" y1="8" x2="12" y2="12"></line>
+                        <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                      </svg>
+                    </div>
+                  </div>
+                  <div className="metric-content">
+                    <div className="metric-value-wrapper">
+                      <span className="metric-value" id="kpiInvalid">
+                        <AnimatedCounter value={invalidInvoicesCount} />
+                      </span>
+                      <span className="metric-value-label">Flagged</span>
+                    </div>
+                    <div className="metric-amount text-invalid-amount">
+                      {formatKpiCurrency(invalidInvoicesAmount)}
+                    </div>
+                    <div className="metric-badge-footer">
+                      <span className="metric-trend-badge danger">
+                        Action Required
+                      </span>
+                      <span className="metric-detail-label">Failed check</span>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              {/* Dynamic SVG & HTML charts */}
+              <div className="dashboard-charts-grid">
+                <div className="chart-widget-card">
+                  <div className="chart-widget-header">
+                    <h3>Accounts Receivable (A/R) Aging</h3>
+                    <span className="chart-subtitle">Distribution of receivables by collection maturity (INR)</span>
+                  </div>
+                  <div className="chart-container-donut">
+                    {arAgingTotal > 0 ? (
+                      <div className="donut-chart-layout">
+                        <div className="donut-svg-wrapper">
+                          <svg viewBox="0 0 120 120" width="100%" height="100%">
+                            {donutArcs.map((arc, i) => (
+                              <circle
+                                key={i}
+                                cx="60"
+                                cy="60"
+                                r="50"
+                                fill="none"
+                                stroke={arc.color}
+                                strokeWidth="11"
+                                strokeDasharray={arc.strokeDasharray}
+                                strokeDashoffset={arc.strokeDashoffset}
+                                className="donut-segment"
+                              />
+                            ))}
+                            <circle cx="60" cy="60" r="41" fill="var(--bg-card)" />
+                          </svg>
+                          <div className="donut-center-overlay">
+                            <span className="donut-center-label">Total Receivables</span>
+                            <span className="donut-center-value">{formatKpiCurrency(arAgingTotal)}</span>
+                          </div>
+                        </div>
+                        <div className="donut-legend-container">
+                          {donutArcs.map((arc, i) => (
+                            <div key={i} className="donut-legend-row" title={arc.label}>
+                              <div className="donut-legend-info">
+                                <span className="donut-legend-dot" style={{ backgroundColor: arc.color }} />
+                                <span className="donut-legend-range">{arc.range}</span>
+                              </div>
+                              <div className="donut-legend-values">
+                                <span className="donut-legend-amount">{formatKpiCurrency(arc.amount)}</span>
+                                <span className="donut-legend-pct">({Math.round(arc.percent)}%)</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="chart-empty">No receivables data available</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="chart-widget-card">
+                  <div className="chart-widget-header">
+                    <h3>Top Vendor Outlays</h3>
+                    <span className="chart-subtitle">Direct invoice allocation value (INR)</span>
+                  </div>
+                  <div className="chart-container-html">
+                    {vendorStats.length > 0 ? (() => {
+                      const maxVendorVal = Math.max(...vendorStats.map(v => v.amount), 1);
+                      return (
+                        <div className="vendor-bar-list">
+                          {vendorStats.map((v, i) => {
+                            const percent = (v.amount / maxVendorVal) * 100;
+                            return (
+                              <div key={i} className="vendor-bar-row">
+                                <div className="vendor-bar-header">
+                                  <span className="vendor-bar-name">{v.name}</span>
+                                  <span className="vendor-bar-value">{formatKpiCurrency(v.amount)}</span>
+                                </div>
+                                <div className="vendor-bar-track">
+                                  <div 
+                                    className="vendor-bar-fill" 
+                                    style={{ 
+                                      width: `${percent}%`, 
+                                      background: `linear-gradient(90deg, var(--primary) 0%, #4f46e5 100%)` 
+                                    }}
+                                  ></div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })() : (
+                      <div className="chart-empty">No vendor data available</div>
+                    )}
+                  </div>
                 </div>
               </div>
-              <div className="metric-content">
-                <span className="metric-value" id="kpiInvalid">
-                  <AnimatedCounter value={invalidInvoicesCount} />
-                </span>
-                <span className="metric-label text-invalid">Requires attention</span>
+
+              {/* Bottom widget row */}
+              <div className="dashboard-widgets-row">
+                {/* Actionable Overdue Invoices */}
+                <div className="widget-card overdue-invoices-widget">
+                  <div className="widget-header-premium">
+                    <h3>Actionable Overdue Invoices</h3>
+                    <span className="badge badge-danger">Follow-up Required</span>
+                  </div>
+                  <div className="overdue-invoices-list">
+                    {actionableOverdueInvoices.length > 0 ? (
+                      actionableOverdueInvoices.map((inv, idx) => (
+                        <div key={idx} className="overdue-invoice-item">
+                          <div className="overdue-invoice-main">
+                            <div className="overdue-invoice-details">
+                              <span className="overdue-invoice-id">{inv.id}</span>
+                              <span className="overdue-invoice-vendor">{inv.vendor}</span>
+                            </div>
+                            <div className="overdue-invoice-meta">
+                              <span className="overdue-invoice-amount">{formatKpiCurrency(inv.amount)}</span>
+                              <span className={`badge ${inv.validation === "Invalid" ? "badge-danger" : "badge-processing"}`}>
+                                {inv.validation === "Invalid" ? "Invalid Check" : `${inv.daysPending}d Pending`}
+                              </span>
+                            </div>
+                          </div>
+                          <button 
+                            className="btn btn-primary btn-sm btn-followup"
+                            onClick={() => handleOpenNotification(inv)}
+                          >
+                            Follow Up
+                          </button>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="chart-empty">No critical overdue invoices found.</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* A/R Ledger Health & Efficiency Metrics */}
+                <div className="widget-card ledger-health-widget">
+                  <div className="widget-header-premium">
+                    <h3>A/R Ledger Health</h3>
+                    <span className="badge badge-submitted">Live KPIs</span>
+                  </div>
+                  <div className="ledger-health-grid">
+                    <div className="health-metric-card">
+                      <span className="health-metric-label">Days Sales Outstanding (DSO)</span>
+                      <div className="health-metric-val-wrapper">
+                        <span className="health-metric-val">{dso}</span>
+                        <span className="health-metric-unit">Days</span>
+                      </div>
+                      <span className="health-metric-desc">Avg pending time of unpaid invoices</span>
+                    </div>
+
+                    <div className="health-metric-card">
+                      <span className="health-metric-label">Collection Effect. Index (CEI)</span>
+                      <div className="health-metric-val-wrapper">
+                        <span className="health-metric-val">{cei}%</span>
+                      </div>
+                      <span className="health-metric-desc">Percentage of total value approved</span>
+                    </div>
+
+                    <div className="health-metric-card">
+                      <span className="health-metric-label">Validation Pass Rate</span>
+                      <div className="health-metric-val-wrapper">
+                        <span className="health-metric-val">{validationPassRate}%</span>
+                      </div>
+                      <span className="health-metric-desc">Compliant vs total registered count</span>
+                    </div>
+
+                    <div className="health-metric-card">
+                      <span className="health-metric-label">Active Escalations</span>
+                      <div className="health-metric-val-wrapper">
+                        <span className="health-metric-val text-invalid-amount">{invalidInvoicesCount}</span>
+                      </div>
+                      <span className="health-metric-desc">Flagged invalid invoices requiring audit</span>
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
-          </section>
-
-          {/* Main Panel: Invoices Table Panel */}
-          <section className="invoice-panel">
-            {/* Filter and Search Toolbar */}
-            <div className="toolbar">
-              <div className="toolbar-left">
-                <div className="tab-filters">
-                  <button 
-                    className={`tab-btn ${currentTab === "all" ? "active" : ""}`} 
-                    id="tabAll"
-                    onClick={() => setCurrentTab("all")}
-                  >
-                    All Invoices <span className="tab-count" id="countAll">{totalInvoicesCount}</span>
-                  </button>
-                  <button 
-                    className={`tab-btn ${currentTab === "bad" ? "active" : ""}`} 
-                    id="tabBad"
-                    onClick={() => setCurrentTab("bad")}
-                  >
-                    Bad Invoices <span className="tab-count count-bad" id="countBad">{invalidInvoicesCount}</span>
-                  </button>
+            </>
+          ) : (
+            <>
+              {/* Invoices view - Reverted original 3 metrics cards */}
+              <section className="invoice-metrics-grid">
+                <div className="invoice-metric-card invoice-card-primary">
+                  <div className="metric-header">
+                    <span className="metric-title">Total Invoices</span>
+                    <div className="metric-icon">
+                      <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                        <polyline points="10 9 9 9 8 9"></polyline>
+                      </svg>
+                    </div>
+                  </div>
+                  <div className="metric-content">
+                    <span className="metric-value" id="kpiTotal">
+                      <AnimatedCounter value={totalInvoicesCount} />
+                    </span>
+                    <span className="metric-change positive">
+                      <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="3" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="12" y1="19" x2="12" y2="5"></line>
+                        <polyline points="5 12 12 5 19 12"></polyline>
+                      </svg>
+                      12% from last week
+                    </span>
+                  </div>
                 </div>
-                <div className="action-buttons">
-                  <button className="btn btn-primary" id="btnUpload" onClick={() => fileInputRef.current.click()}>
-                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                      <polyline points="17 8 12 3 7 8"></polyline>
-                      <line x1="12" y1="3" x2="12" y2="15"></line>
-                    </svg>
-                    Upload Invoice
-                  </button>
-                  <input 
-                    type="file" 
-                    id="fileInput" 
-                    ref={fileInputRef}
-                    accept=".pdf,.xml,.json,.png,.jpg,.jpeg" 
-                    style={{ display: "none" }} 
-                    onChange={handleFileUpload}
-                  />
-                  <button className="btn btn-secondary" id="btnPull" onClick={handlePullInvoices}>
-                    Pull Invoices
-                  </button>
-                </div>
-              </div>
 
-              <div className="toolbar-right">
-                <div className="search-box">
-                  <svg className="search-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="11" cy="11" r="8"></circle>
-                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                  </svg>
-                  <input 
-                    type="text" 
-                    id="searchInput" 
-                    placeholder="Search vendor or invoice #..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                  />
+                <div className="invoice-metric-card invoice-card-valid">
+                  <div className="metric-header">
+                    <span className="metric-title">Valid Invoices</span>
+                    <div className="metric-icon">
+                      <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                        <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                      </svg>
+                    </div>
+                  </div>
+                  <div className="metric-content">
+                    <span className="metric-value" id="kpiValid">
+                      <AnimatedCounter value={validInvoicesCount} />
+                    </span>
+                    <span className="metric-label text-valid">No validation errors</span>
+                  </div>
                 </div>
-                <div className="filter-select-wrapper">
-                  <select 
-                    id="statusFilter" 
-                    className="filter-select"
-                    value={selectedStatus}
-                    onChange={(e) => setSelectedStatus(e.target.value)}
-                  >
-                    <option value="all">All Statuses</option>
-                    <option value="Submitted">Submitted</option>
-                    <option value="Processing">Processing</option>
-                    <option value="Approved">Approved</option>
-                  </select>
+
+                <div className="invoice-metric-card invoice-card-invalid-kpi">
+                  <div className="metric-header">
+                    <span className="metric-title">Invalid Invoices</span>
+                    <div className="metric-icon">
+                      <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="12" y1="8" x2="12" y2="12"></line>
+                        <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                      </svg>
+                    </div>
+                  </div>
+                  <div className="metric-content">
+                    <span className="metric-value" id="kpiInvalid">
+                      <AnimatedCounter value={invalidInvoicesCount} />
+                    </span>
+                    <span className="metric-label text-invalid">Requires attention</span>
+                  </div>
                 </div>
-                <button className="btn btn-icon-only" id="btnRefresh" title="Refresh list" onClick={handleRefresh}>
-                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="23 4 23 10 17 10"></polyline>
-                    <polyline points="1 20 1 14 7 14"></polyline>
-                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-                  </svg>
-                </button>
-              </div>
-            </div>
+              </section>
 
-            {/* Invoices Data Grid / Table */}
-            <div className="table-container">
-              <table className="invoice-table" id="invoiceGrid">
-                <thead>
-                  <tr>
-                    <th className="sortable" data-sort="id" onClick={() => handleSort("id")}>
-                      INVOICE # 
-                      <span className={`sort-icon ${sortColumn === "id" ? sortDirection : ""}`}></span>
-                    </th>
-                    <th className="sortable" data-sort="vendor" onClick={() => handleSort("vendor")}>
-                      VENDOR 
-                      <span className={`sort-icon ${sortColumn === "vendor" ? sortDirection : ""}`}></span>
-                    </th>
-                    <th className="sortable" data-sort="date" onClick={() => handleSort("date")}>
-                      DATE 
-                      <span className={`sort-icon ${sortColumn === "date" ? sortDirection : ""}`}></span>
-                    </th>
-                    <th className="sortable text-right" data-sort="amount" onClick={() => handleSort("amount")}>
-                      AMOUNT 
-                      <span className={`sort-icon ${sortColumn === "amount" ? sortDirection : ""}`}></span>
-                    </th>
-                    <th className="sortable" data-sort="status" onClick={() => handleSort("status")}>
-                      STATUS 
-                      <span className={`sort-icon ${sortColumn === "status" ? sortDirection : ""}`}></span>
-                    </th>
-                    <th className="sortable" data-sort="validation" onClick={() => handleSort("validation")}>
-                      VALIDATION 
-                      <span className={`sort-icon ${sortColumn === "validation" ? sortDirection : ""}`}></span>
-                    </th>
-                    <th className="sortable" data-sort="created" onClick={() => handleSort("created")}>
-                      CREATED 
-                      <span className={`sort-icon ${sortColumn === "created" ? sortDirection : ""}`}></span>
-                    </th>
-                    <th className="text-center">ESCALATE</th>
-                    <th className="text-center">ACTIONS</th>
-                  </tr>
-                </thead>
-                <tbody id="invoiceTableBody">
-                  {paginatedList.map(invoice => {
-                    const isDeleting = deletingInvoiceId === invoice.id;
-                    const dateFormatted = formatDate(invoice.date);
-                    const createdFormatted = formatDate(invoice.created);
-                    const amountFormatted = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(invoice.amount);
-
-                    return (
-                      <tr 
-                        key={invoice.id} 
-                        className={`${invoice.validation === "Invalid" ? "row-invalid" : ""}`}
-                        style={isDeleting ? {
-                          transition: "all 0.4s ease",
-                          opacity: 0,
-                          transform: "translateX(20px)"
-                        } : {}}
+              {/* Main Panel: Invoices Table Panel */}
+              <section className="invoice-panel">
+                {/* Filter and Search Toolbar */}
+                <div className="toolbar">
+                  <div className="toolbar-left">
+                    <div className="tab-filters">
+                      <button 
+                        className={`tab-btn ${currentTab === "all" ? "active" : ""}`} 
+                        id="tabAll"
+                        onClick={() => setCurrentTab("all")}
                       >
-                        <td>{invoice.id}</td>
-                        <td><strong>{invoice.vendor}</strong></td>
-                        <td>{dateFormatted}</td>
-                        <td className="text-right"><strong>{amountFormatted}</strong></td>
-                        <td>
-                          <span className={`badge badge-${invoice.status.toLowerCase()}`}>
-                            {invoice.status}
-                          </span>
-                        </td>
-                        <td>
-                          <span className={`validation-badge val-${invoice.validation.toLowerCase()}`}>
-                            <span className="val-dot"></span>{invoice.validation}
-                          </span>
-                        </td>
-                        <td>{createdFormatted}</td>
-                        <td className="text-center">
-                          <button 
-                            className="btn-notify-cta" 
-                            disabled={invoice.validation !== 'Invalid'}
-                            onClick={() => handleOpenNotification(invoice)}
-                          >
-                            <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: "2px", verticalAlign: "middle" }}>
-                              <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
-                              <polyline points="22,6 12,13 2,6"></polyline>
-                            </svg>
-                            Notify
-                          </button>
-                        </td>
-                        <td className="text-center">
-                          <button 
-                            className={`btn-action-trigger ${contextMenu.visible && contextMenu.invoice?.id === invoice.id ? "active" : ""}`}
-                            onClick={(e) => handleActionTrigger(e, invoice)}
-                          >
-                            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-                              <circle cx="12" cy="12" r="1"></circle>
-                              <circle cx="12" cy="5" r="1"></circle>
-                              <circle cx="12" cy="19" r="1"></circle>
-                            </svg>
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                        All Invoices <span className="tab-count" id="countAll">{totalInvoicesCount}</span>
+                      </button>
+                      <button 
+                        className={`tab-btn ${currentTab === "bad" ? "active" : ""}`} 
+                        id="tabBad"
+                        onClick={() => setCurrentTab("bad")}
+                      >
+                        Bad Invoices <span className="tab-count count-bad" id="countBad">{invalidInvoicesCount}</span>
+                      </button>
+                    </div>
+                    <div className="action-buttons">
+                      <button className="btn btn-primary" id="btnUpload" onClick={() => fileInputRef.current.click()}>
+                        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                          <polyline points="17 8 12 3 7 8"></polyline>
+                          <line x1="12" y1="3" x2="12" y2="15"></line>
+                        </svg>
+                        Upload Invoice
+                      </button>
+                      <input 
+                        type="file" 
+                        id="fileInput" 
+                        ref={fileInputRef}
+                        accept=".pdf,.xml,.json,.png,.jpg,.jpeg" 
+                        style={{ display: "none" }} 
+                        onChange={handleFileUpload}
+                      />
+                      <button className="btn btn-secondary" id="btnPull" onClick={handlePullInvoices}>
+                        Pull Invoices
+                      </button>
+                    </div>
+                  </div>
 
-              {/* Empty State */}
-              <div className={`empty-state ${totalEntries > 0 ? "hidden" : ""}`} id="emptyState">
-                <svg viewBox="0 0 24 24" width="48" height="48" stroke="var(--text-muted)" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                  <polyline points="14 2 14 8 20 8"></polyline>
-                  <line x1="9" y1="15" x2="15" y2="15"></line>
-                </svg>
-                <h3>No Invoices Found</h3>
-                <p>Try adjusting your filters or search term, or upload a new invoice.</p>
-              </div>
-            </div>
-
-            {/* Pagination / Grid Footer */}
-            <div className="table-footer">
-              <div className="pagination-info">
-                Showing <span id="showingStart">{totalEntries === 0 ? 0 : startIdx + 1}</span> to <span id="showingEnd">{endIdx}</span> of <span id="showingTotal">{totalEntries}</span> entries
-              </div>
-              <div className="pagination-controls">
-                <button 
-                  className="btn btn-secondary btn-sm" 
-                  id="btnPrevPage" 
-                  disabled={currentPage === 1}
-                  onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-                >
-                  Previous
-                </button>
-                <div className="page-numbers" id="pageNumbers">
-                  {Array.from({ length: totalPages }, (_, i) => i + 1).map(pageNum => (
-                    <button 
-                      key={pageNum}
-                      className={`page-num ${pageNum === currentPage ? "active" : ""}`}
-                      onClick={() => setCurrentPage(pageNum)}
-                    >
-                      {pageNum}
+                  <div className="toolbar-right">
+                    <div className="search-box">
+                      <svg className="search-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                      </svg>
+                      <input 
+                        type="text" 
+                        id="searchInput" 
+                        placeholder="Search vendor or invoice #..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                      />
+                    </div>
+                    <div className="filter-select-wrapper">
+                      <select 
+                        id="statusFilter" 
+                        className="filter-select"
+                        value={selectedStatus}
+                        onChange={(e) => setSelectedStatus(e.target.value)}
+                      >
+                        <option value="all">All Statuses</option>
+                        <option value="Submitted">Submitted</option>
+                        <option value="Processing">Processing</option>
+                        <option value="Approved">Approved</option>
+                      </select>
+                    </div>
+                    <button className="btn btn-icon-only" id="btnRefresh" title="Refresh list" onClick={handleRefresh}>
+                      <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="23 4 23 10 17 10"></polyline>
+                        <polyline points="1 20 1 14 7 14"></polyline>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                      </svg>
                     </button>
-                  ))}
+                  </div>
                 </div>
-                <button 
-                  className="btn btn-secondary btn-sm" 
-                  id="btnNextPage"
-                  disabled={currentPage === totalPages || totalEntries === 0}
-                  onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-                >
-                  Next
-                </button>
-              </div>
-            </div>
-          </section>
+
+                {/* Invoices Data Grid / Table */}
+                <div className="table-container">
+                  <table className="invoice-table" id="invoiceGrid">
+                    <thead>
+                      <tr>
+                        <th className="sortable" data-sort="id" onClick={() => handleSort("id")}>
+                          INVOICE # 
+                          <span className={`sort-icon ${sortColumn === "id" ? sortDirection : ""}`}></span>
+                        </th>
+                        <th className="sortable" data-sort="vendor" onClick={() => handleSort("vendor")}>
+                          VENDOR 
+                          <span className={`sort-icon ${sortColumn === "vendor" ? sortDirection : ""}`}></span>
+                        </th>
+                        <th className="sortable" data-sort="date" onClick={() => handleSort("date")}>
+                          DATE 
+                          <span className={`sort-icon ${sortColumn === "date" ? sortDirection : ""}`}></span>
+                        </th>
+                        <th className="sortable text-right" data-sort="amount" onClick={() => handleSort("amount")}>
+                          AMOUNT 
+                          <span className={`sort-icon ${sortColumn === "amount" ? sortDirection : ""}`}></span>
+                        </th>
+                        <th className="sortable" data-sort="status" onClick={() => handleSort("status")}>
+                          STATUS 
+                          <span className={`sort-icon ${sortColumn === "status" ? sortDirection : ""}`}></span>
+                        </th>
+                        <th className="sortable" data-sort="validation" onClick={() => handleSort("validation")}>
+                          VALIDATION 
+                          <span className={`sort-icon ${sortColumn === "validation" ? sortDirection : ""}`}></span>
+                        </th>
+                        <th className="sortable" data-sort="created" onClick={() => handleSort("created")}>
+                          CREATED 
+                          <span className={`sort-icon ${sortColumn === "created" ? sortDirection : ""}`}></span>
+                        </th>
+                        <th className="text-center">ESCALATE</th>
+                        <th className="text-center">ACTIONS</th>
+                      </tr>
+                    </thead>
+                    <tbody id="invoiceTableBody">
+                      {paginatedList.map(invoice => {
+                        const isDeleting = deletingInvoiceId === invoice.id;
+                        const dateFormatted = formatDate(invoice.date);
+                        const createdFormatted = formatDate(invoice.created);
+                        const amountFormatted = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(invoice.amount);
+
+                        return (
+                          <tr 
+                            key={invoice.id} 
+                            className={`${invoice.validation === "Invalid" ? "row-invalid" : ""}`}
+                            style={isDeleting ? {
+                              transition: "all 0.4s ease",
+                              opacity: 0,
+                              transform: "translateX(20px)"
+                            } : {}}
+                          >
+                            <td>{invoice.id}</td>
+                            <td><strong>{invoice.vendor}</strong></td>
+                            <td>{dateFormatted}</td>
+                            <td className="text-right"><strong>{amountFormatted}</strong></td>
+                            <td>
+                              <span className={`badge badge-${invoice.status.toLowerCase()}`}>
+                                {invoice.status}
+                              </span>
+                            </td>
+                            <td>
+                              <span className={`validation-badge val-${invoice.validation.toLowerCase()}`}>
+                                <span className="val-dot"></span>{invoice.validation}
+                              </span>
+                            </td>
+                            <td>{createdFormatted}</td>
+                            <td className="text-center">
+                              <button 
+                                className="btn-notify-cta" 
+                                disabled={invoice.validation !== 'Invalid'}
+                                onClick={() => handleOpenNotification(invoice)}
+                              >
+                                <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: "2px", verticalAlign: "middle" }}>
+                                  <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
+                                  <polyline points="22,6 12,13 2,6"></polyline>
+                                </svg>
+                                Notify
+                              </button>
+                            </td>
+                            <td className="text-center">
+                              <button 
+                                className={`btn-action-trigger ${contextMenu.visible && contextMenu.invoice?.id === invoice.id ? "active" : ""}`}
+                                onClick={(e) => handleActionTrigger(e, invoice)}
+                              >
+                                <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                                  <circle cx="12" cy="12" r="1"></circle>
+                                  <circle cx="12" cy="5" r="1"></circle>
+                                  <circle cx="12" cy="19" r="1"></circle>
+                                </svg>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+
+                  {/* Empty State */}
+                  <div className={`empty-state ${totalEntries > 0 ? "hidden" : ""}`} id="emptyState">
+                    <svg viewBox="0 0 24 24" width="48" height="48" stroke="var(--text-muted)" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                      <polyline points="14 2 14 8 20 8"></polyline>
+                      <line x1="9" y1="15" x2="15" y2="15"></line>
+                    </svg>
+                    <h3>No Invoices Found</h3>
+                    <p>Try adjusting your filters or search term, or upload a new invoice.</p>
+                  </div>
+                </div>
+
+                {/* Pagination / Grid Footer */}
+                <div className="table-footer">
+                  <div className="pagination-info">
+                    Showing <span id="showingStart">{totalEntries === 0 ? 0 : startIdx + 1}</span> to <span id="showingEnd">{endIdx}</span> of <span id="showingTotal">{totalEntries}</span> entries
+                  </div>
+                  <div className="pagination-controls">
+                    <button 
+                      className="btn btn-secondary btn-sm" 
+                      id="btnPrevPage" 
+                      disabled={currentPage === 1}
+                      onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                    >
+                      Previous
+                    </button>
+                    <div className="page-numbers" id="pageNumbers">
+                      {Array.from({ length: totalPages }, (_, i) => i + 1).map(pageNum => (
+                        <button 
+                          key={pageNum}
+                          className={`page-num ${pageNum === currentPage ? "active" : ""}`}
+                          onClick={() => setCurrentPage(pageNum)}
+                        >
+                          {pageNum}
+                        </button>
+                      ))}
+                    </div>
+                    <button 
+                      className="btn btn-secondary btn-sm" 
+                      id="btnNextPage"
+                      disabled={currentPage === totalPages || totalEntries === 0}
+                      onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              </section>
+            </>
+          )}
         </main>
       </div>
 
