@@ -2,9 +2,6 @@ import React, { useState, useEffect, useRef } from "react";
 import LogoIaI from "./assets/Logo-IAmInterviewed-white.png" ;
 import UserAvatar from "./assets/1.png"
 
-// ==========================================================================
-// Mock Database State & Constants
-// ==========================================================================
 const initialInvoices = [
   { id: "EXT-1001", vendor: "TCS", date: "2026-06-01", amount: 1450.50, status: "Submitted", validation: "Valid", created: "2026-06-04" },
   { id: "EXT-1002", vendor: "Infosys", date: "2026-06-03", amount: 980.00, status: "Processing", validation: "Invalid", created: "2026-06-04" },
